@@ -1,11 +1,6 @@
-#coding:utf-8
-
-####
-##   Initialize
-####
 import random
-import asyncio #sleepを使うのに必要
-import discord ##discordでBOTを使うのにこれが必ずいる
+import asyncio
+import discord
 import csv
 import pandas as pd
 import os
