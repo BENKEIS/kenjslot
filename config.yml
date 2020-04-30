@@ -1,0 +1,100 @@
+'message_info': # メッセージ関係の設定
+  'recieve': # 受信メッセージ
+    'start_slot': '/tip bgpt 200'
+    'start_rush': '！スタート'
+    'not_linked_account': 'You can change the language.'
+    'short_coin': '残高が不足しています。'
+
+  'send': # 発信メッセージ
+    'over_use_limit': '本日の上限回数を超えています。'
+    'return_tip_message': 'チップを返却します。'
+    'not_execute_slot': 'スロット実行中ではありません。'
+    'not_linked_account': 'うずらwalletのリンクが切れています。'
+    'short_coin': 'コインが不足しています。'
+    'choice_stamp': 'スタンプを１つ選んでね。'
+    'rush_message_1': 'エブリーRUSH'
+    'rush_message_2': '8～15連チャン'
+    'rush_message_3': '「！スタート」で抽選開始'
+    'not_rush_time': 'RUSH中ではありません。'
+
+'id_info':  # idを設定
+  'slot_bot_id': '703768008098709596'
+  'uzura_bot_id': '443151241816834048'
+
+'other_info': # その他を設定
+  'date_use_time':  # 1日の上限利用回数
+    20
+  'uzura_command_wait_second':  # うずらチップコマンド発行時に待機する秒数を指定
+    5
+
+'slot_info':  # スロットの出目の確立設定
+  'random_generate_size': # 乱数の生成サイズをfrom-toで指定
+    'from': 1
+    'to': 100000
+
+  'key_probabilities':  # 各当たりの確率を「random_generate_size」で指定した範囲内で指定
+    '激賢者ボーナス': # 1/100000
+      'from': 100000
+      'to': 100000
+    '超賢者ボーナス': # 1/1000
+      'from': 99901
+      'to': 99999
+    '大賢者ボーナス': # 1/500
+      'from': 99699
+      'to': 99900
+    '??×500': # 1/30
+      'from': 96497
+      'to': 99698
+    '??×2000': # 1/80
+      'from': 95245
+      'to': 96496
+    '??×1500': # 1/100
+      'from': 94243
+      'to': 95244
+    '??×800': # 1/120
+      'from': 93410
+      'to': 94242
+    'エブリーRUSH': # 1/300
+      'from': 93077
+      'to': 93409
+    '??×1000': # 1/16
+      'from': 86827
+      'to': 93076
+    #'れあchance':
+      #'from': 2
+      #'to': 800
+    '??×50': # 1/150
+      'from': 86160
+      'to': 86826
+    'ハズレじゃ':
+      'from': 1
+      'to': 86159
+
+'rush_info': #RUSHに関する設定
+  'random_generate_size': # 乱数の生成サイズをfrom-toで指定
+    'from': 8
+    'to': 15
+
+  'rush_tips':  # RUSH時の抽選の出目の種類
+    'everyone': 'everyone×5000'
+    'everyloto': 'everyloto×10000'
+    '456coin': '456coin×10000'
+    '29coin': '29coin×20000'
+
+  'random_generate_size_key':
+    'from': 1
+    'to': 100
+
+  'key_probabilities':  # 各当たりの確率を「random_generate_size」で指定した範囲内で指定
+    'everyone':
+      'from': 1
+      'to': 10
+    'everyloto':
+      'from': 11
+      'to': 35
+    '456coin':
+      'from': 36
+      'to': 60
+    '29coin':
+      'from': 61
+      'to': 100
