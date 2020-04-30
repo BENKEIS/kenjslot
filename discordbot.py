@@ -1,474 +1,364 @@
-from discord.ext import commands
-from discord.ext import tasks
+#coding:utf-8
+
+####
+##   Initialize
+####
+import random
+import asyncio #sleepを使うのに必要
+import discord ##discordでBOTを使うのにこれが必ずいる
+import csv
+import pandas as pd
 import os
-import traceback
-import discord
-from datetime import datetime 
+import datetime
+import time
+from collections import defaultdict
+from slot_object import SlotObject
+from log_object import LogObject
+import yaml
 
 token = os.environ['DISCORD_BOT_TOKEN']
-CHANNEL_ID =698653628176531478  #チャンネルID
 
-# 接続に必要なオブジェクトを生成
 client = discord.Client()
+with open(f'{os.getcwd()}/config.yml', 'r', encoding='utf-8') as yml:
+    config_dict = yaml.load(yml, Loader=yaml.SafeLoader)
+
+####
+##   ConfigKey setting
+####
+
+SLOT_CONFIG_KEY = 'slot_info'
+RANDOM_SIZE_KEY = 'random_generate_size'
+PROBABILITY_KEY = 'key_probabilities'
+
+MESSAGE_CONFIG_KEY = 'message_info'
+RECIEVE_KEY = 'recieve'
+SEND_KEY = 'send'
+
+ID_CONFIG_KEY = 'id_info'
+
+OTHER_CONFIG_KEY = 'other_info'
+
+RUSH_CONFIG_KEY = 'rush_info'
+RUSH_TIP_KEY = 'rush_tips'
+RUSH_PICTURE_RANDOM_KEY = 'random_generate_size_key'
+RUSH_PICTURE_KEY = 'key_probabilities'
+
+####
+##   Global settings
+####
+
+RUSH_FLG_FILE_PATH = f'{os.getcwd()}/rush_flg'
+DO_SLOT_FILE_PATH = f'{os.getcwd()}/do_slot_flg'
+USER_FILE_PATH = f'{os.getcwd()}/user_log'
+
+DATE_USE_LIMIT = config_dict[OTHER_CONFIG_KEY]['date_use_time']
+UZURA_CMD_WAIT_SECOND = config_dict[OTHER_CONFIG_KEY]['uzura_command_wait_second']
+
+SLOT_BOT_ID = int(config_dict[ID_CONFIG_KEY]['slot_bot_id'])
+UZURA_BOT_ID = int(config_dict[ID_CONFIG_KEY]['uzura_bot_id'])
+
+message_config = config_dict[MESSAGE_CONFIG_KEY]
+recieve_messages = message_config[RECIEVE_KEY]
+send_messages = message_config[SEND_KEY]
+
+####
+##   Functions
+####
+
+def check_use_times(author):
+    """
+    「./user_log/ユーザー名.csv」が存在するか判定し、以下の処理を行う。
+    存在しない場合は以下のヘッダーのCSVファイルを出力する。
+    ['user_id','date','use_times']
+
+    「./user_log/ユーザー名.csv」を読み込み、「date」、「use_times」列で一意のkeyとして利用回数を判定する
+    指定した上限回数より少ない場合は「True」、多い場合はFalseを返す
+
+    Parameters
+    ------------------------------
+    author : str
+        ユーザー名
+
+    Returns
+    ------------------------------
+    ret_flg : bool
+        利用回数が上限回数以内かどうか
+    """
+    author = str(author).split('#')[0]  #そのまま使うとauthorの末尾に「#xxx」が付いてしまうため取り除く
+
+    if not os.path.exists(f'{USER_FILE_PATH}/{author}.csv'):
+        with open(f'{USER_FILE_PATH}/{author}.csv', 'w', encoding='utf-8', newline='') as output_stream:
+            writer = csv.writer(output_stream)
+            header = [
+                'user_id',
+                'date',
+                'use_times'
+            ]
+            writer.writerow(header)
+    
+    current_date = datetime.date.today().strftime('%Y-%m-%d')   #date型のままだとqueryの条件で型が一致しないため、strに変換する
+    user_log_data = pd.read_csv(f'{USER_FILE_PATH}/{author}.csv', encoding='utf-8', engine='python')
+    current_user_data = user_log_data.query('user_id == @author and date == @current_date')
+
+    ret_flg = None
+    log_obj = LogObject()
+    log_obj.user_id = author
+    log_obj.date = current_date
+
+    if len(current_user_data) == 0:
+        # 今日初めての利用の場合
+        ret_flg = True
+
+    else:
+        if current_user_data['use_times'].values[0] != DATE_USE_LIMIT:
+            # 今日の今までの利用回数が指定回数以下の場合
+            ret_flg = True
+        else:
+            # 今日の今までの利用回数が指定回数以上の場合
+            ret_flg = False
+
+    if ret_flg:
+        user_log_data.to_csv(f'{USER_FILE_PATH}/{author}.csv', encoding='utf-8', index=False)
+
+    return ret_flg
+
+def update_use_times(author):
+    """
+    「./user_log/ユーザー名.csv」を読み込み、「date」、「use_times」列で一意のkeyとして
+    利用回数をインクリメントして更新する
+
+    Parameters
+    ------------------------------
+    author : str
+        ユーザー名
+
+    Returns
+    ------------------------------
+    Nothing
+    """
+    current_date = datetime.date.today().strftime('%Y-%m-%d')   #date型のままだとqueryの条件で型が一致しないため、strに変換する
+    user_log_data = pd.read_csv(f'{USER_FILE_PATH}/{author}.csv', encoding='utf-8', engine='python')
+    current_user_data = user_log_data.query('user_id == @author and date == @current_date')
+
+    log_obj = LogObject()
+    log_obj.user_id = author
+    log_obj.date = current_date
+
+    if len(current_user_data) == 0:
+        # 今日初めての利用の場合は、行が存在しないので、利用回数1回の行を新規で作成し、DataFrameに追加してcsvを更新する
+        log_obj.use_times = 1
+        s = pd.Series([log_obj.user_id, log_obj.date, log_obj.use_times], index=user_log_data.columns)
+        user_log_data = user_log_data.append(s, ignore_index=True)
+
+    elif current_user_data['use_times'].values[0] != DATE_USE_LIMIT:
+        # 今日の今までの利用回数が19回以下の場合は、該当ユーザーのDataFrameの利用回数を+1してcsvを更新する
+        use_times = current_user_data['use_times'].values[0] + 1
+        user_log_data.loc[(user_log_data['user_id'] == author) & (user_log_data['date'] == current_date),['use_times']] = use_times
+
+    user_log_data.to_csv(f'{USER_FILE_PATH}/{author}.csv', encoding='utf-8', index=False)
+
+def get_slot_key():
+    """
+    スロットの出目のkeyを返す
+    """
+    slot_config = config_dict[SLOT_CONFIG_KEY]
+    random_size_config = slot_config[RANDOM_SIZE_KEY]
+    probability_config = slot_config[PROBABILITY_KEY]
+
+    decided_num = random.randint(random_size_config['from'], random_size_config['to'])
+
+    # 数値に応じて当たり辞書のkeyを決定する
+    key = None
+    for bonus_kind, from_to in probability_config.items():
+        if from_to['from'] <= decided_num <= from_to['to']:
+            key = bonus_kind
+    
+    return key
+
+def on_rush_flg(author):
+    """
+    RUSH中を表す「./rush_flg/ユーザー名.csv」を作成する
+    """
+    with open(f'{os.getcwd()}/rush_flg/{author}.csv', 'w', encoding='utf-8', newline='') as output_stream:
+        pass
+
+def update_slot_flg(path, row_contents):
+    with open(path, 'w', encoding='utf-8', newline='') as output_stream:
+        writer = csv.writer(output_stream)
+        header = [
+            'state'
+        ]
+        writer.writerow(header)
+        writer.writerow(row_contents)
 
 @client.event
 async def on_ready():
-    """起動時に通知してくれる処理"""
-    print('ログインしました')
-    print(client.user.name)  # ボットの名前
-    print(client.user.id)  # ボットのID
-    print(discord.__version__)  # discord.pyのバージョン
+    print('Logged in as')
+    print(client.user.name)
+    print(client.user.id)
     print('------')
 
+@client.event
+async def check_reaction(target_msg, slot_obj, mention):
+    """
+    指定のメッセージにリアクションがついたらメッセージを送る
+    """
+    while True:
+        target_reaction = await client.wait_for_reaction(message=target_msg)
+        if target_reaction.user != target_msg.author:
+            random_odds = slot_obj.get_random_odds()
+            random_odds_arr = random_odds.split('×')
+            coin_name = random_odds_arr[0]
+            odds = random_odds_arr[1]
 
-# 60秒に一回ループ
-@tasks.loop(seconds=60)
-async def loop():
-    # 現在の時刻
-    now = datetime.now().strftime('%H:%M')
-    
-    if now == '00:25':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('How are UZURAS<:uzu:699374038220538006>BOT doing today?<:uzu2:700858786960900117>.....<:uzu1:700858878879072303>‼') 
-    
-    if now == '00:29':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@everyone Mornin!Rain☔ is 1min later.<:good01:699581068285706301>51120671>')  
-    
-    if now == '00:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 200 ActiveUserOnly  <:good01:699581068285706301><:gm:699792760651120671><:JPYNdisco:698471276498649168>')  
+            await client.send_message(target_msg.channel, random_odds)
+            await client.send_message(target_msg.channel, f'/tip {coin_name} {odds} {mention}')
+            await client.remove_reaction(target_msg, target_reaction.reaction.emoji, target_reaction.user)
+            break
 
-    if now == '00:31':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 777 ActiveUserOnly  <:good01:699581068285706301><:gm:699792760651120671><:BGPT02:698471366004965406> ')
+####
+##   Main flow
+####
 
-    if now == '00:32':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 300 ActiveUserOnly  <:good01:699581068285706301><:gm:699792760651120671><:benkeicoinsl:698471387064696833>')
+@client.event
+async def on_message(message):
+    # スロット実行
+    if message.content.startswith(recieve_messages['start_slot']) and message.mentions[0].id == SLOT_BOT_ID:
+        # 送り主がBotじゃない場合
+        if client.user != message.author:
+            author = str(message.author).split('#')[0]  #そのまま使うとauthorの末尾に「#xxx」が付いてしまうため取り除く
+            if check_use_times(author):
+                update_slot_flg(f'{DO_SLOT_FILE_PATH}/{author}.csv', ['ready'])
 
-    if now == '00:33':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 250 ActiveUserOnly  <:good01:699581068285706301><:gm:699792760651120671><:JPYNdisco:698471276498649168>')  
-  
-    if now == '00:34':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 222 ActiveUserOnly  <:good01:699581068285706301><:gm:699792760651120671><:JPYNdisco:698471276498649168>')  
+                pass
+
+            # 今日の利用回数が20回以上の場合はその旨を通知し、tipを返却する
+            else:
+                await message.channel.send(send_messages['over_use_limit'])
+                await message.channel.send(send_messages['return_tip_message'])
+                time.sleep(UZURA_CMD_WAIT_SECOND)
+
+                # tipを返却
+                return_tip_command = f'{recieve_messages["start_slot"]} {message.author.mention}'
+                await message.channel.send(return_tip_command)
+                pass
     
-    if now == '00:35':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 777 ActiveUserOnly  <:good01:699581068285706301><:gm:699792760651120671><:BGPT02:698471366004965406> ')
+    # うずらからの応答の場合
+    elif message.author.id == UZURA_BOT_ID:
+        # authorとmentionを取得する
+        author = None
+        mention = None
+        for current_mention in message.mentions:
+            if current_mention.id != SLOT_BOT_ID:
+                author = current_mention.name
+                mention = current_mention.mention
+                break
 
-    if now == '00:37':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 333 ActiveUserOnly  <:good01:699581068285706301><:gm:699792760651120671><:benkeicoinsl:698471387064696833>')
+        if os.path.exists(f'{DO_SLOT_FILE_PATH}/{author}.csv'):
+            # ステータス取得
+            do_slot_data = pd.read_csv(f'{DO_SLOT_FILE_PATH}/{author}.csv', encoding='utf-8', engine='python')
+            status = do_slot_data['state'].values[0]
+            # スロットの出目の応答か判定する
+            # スロット実行時のチップコマンドの応答の場合
+            if status == 'ready':
+                # リンク切れの場合はその旨を通知し、「./do_slot_flg/ユーザー名.csv」を削除する
+                if recieve_messages['not_linked_account'] in message.content:
+                    os.remove(f'{DO_SLOT_FILE_PATH}/{author}.csv')
+                    await message.channel.send(send_messages['not_linked_account'])
+                    pass
 
-    if now == '00:38':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:heart02:699580174911668225>Okay,later👋')     
+                # 所持コインが不足している場合はその旨を通知し、「./do_slot_flg/ユーザー名.csv」を削除する
+                elif (recieve_messages['short_coin'] in message.content)or('No balance'in message.content):
+                    os.remove(f'{DO_SLOT_FILE_PATH}/{author}.csv')
+                    await message.channel.send(send_messages['short_coin'])
+                    pass
 
-    if now == '01:29':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@everyone <:heart02:699580174911668225>are you ready Okay')     
+                # リンク切れでない、所持コイン不足していない場合はスロットを実行する
+                else:
+                    # 「./do_slot_flg/ユーザー名.csv」の「state」列を「execute」に更新する
+                    update_slot_flg(f'{DO_SLOT_FILE_PATH}/{author}.csv', ['execute'])
 
-    if now == '01:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw JPYN 60 3 EquallyDistributed  <:good01:699581068285706301><:JPYNdisco:698471276498649168>⚾Plz receive→/catch')
-    
-    if now == '01:31':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw BGPT 777 4 AttenuationDistributed  <:BGPT02:698471366004965406><:good:699580636448423936>⚾Plz receive→/catch')
-    
-    if now == '01:32':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw BEN 100 4 AttenuationDistributed  <:BENKEICOIN04:698471407650209832><:benkeicoinsl:698471387064696833>⚾Plz receive→/catch')
-    
-    if now == '01:38':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:good01:699581068285706301> Okay,later👋')  
-    
-    if now == '01:59':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 77.7 ActiveUserOnly  <:good01:699581068285706301>🌈 <:benkeicoinsl:698471387064696833> ')  
-        
-    if now == '02:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 10 ActiveUserOnly  🌈 <:JPYNdisco:698471276498649168> ')
-        
-    if now == '02:58':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701767349828714606/hg.png ')    
+                    # 今日の利用回数を更新する
+                    update_use_times(author)
 
-    if now == '02:59':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:suika_paku:699072728153587782> Im hungry!I want to eat meat🍖🍗29coin?!')    
-     
-    if now == '03:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw 29coin 29292.929 5 EquallyDistributed   🍖🍗Plz receive→/catch<:hai_kao:699072592987947117>29meat🍖🍗')
+                    key = get_slot_key()
+                    # 当たり情報の辞書を取得し、keyに応じた内容を取得する
+                    slot_obj = SlotObject()
+                    content = slot_obj.get_hit_dict(mention)[key]
+                    await message.channel.send(key)
+                    msg = await message.channel.send(content['picture'])
+                    """if content['picture'] in slot_obj.special_production_pictures:
+                        # 出目がリアクションボタン対象の場合、リアクションボタンを出現させ、リアクションボタンのクリックを待つ
+                        await message.channel.send(send_messages['choice_stamp'])
+                        for rb in slot_obj.rb_list:
+                            await msg.add_reaction(rb)
 
-    if now == '03:13':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:guru:699579775500681246>💦I’m so full that I can’t breathe.🍖🍗!Sorry....ww')
-        
-    if now == '03:14':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('Plz.<:kanngaeru:699072662382837881> give me?【/tip 29coin *** @🌈Rains☔ 】Tip🍖')
-        
-    if now == '03:15':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:good01:699581068285706301> ☑🥩29coin tip please. If you tip 29coins of 10000 or 100000, in return, I will tip JPNY COIN for a while!【/tip 29coin <@700176826282147851>】') 
-        
-    if now == '03:25':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701767323304067133/hty.png ') 
+                        client.loop.create_task(check_reaction(msg, slot_obj, mention))"""
+                    
+                    if content['picture'] in slot_obj.rush_pictures:
+                        # 出目がRUSH対象の絵柄の場合特殊演出のフラグcsvを作成する
+                        on_rush_flg(author)
+                        await message.channel.send(send_messages['rush_message_1'])
+                        await message.channel.send(send_messages['rush_message_2'])
+                        await message.channel.send(send_messages['rush_message_3'])
+                    else:
+                        # リアクションボタン対象外、RUSH対象外の場合、チップを表示する(通常の当たり時)
+                        if key != 'ハズレじゃ': # ハズレの場合、空文字を送るとエラーになる
+                            for tip_command, tip in zip(content['tip_command'].split('\n'), content['tip'].split('\n')):
+                                await message.channel.send(tip)
+                                await message.channel.send(tip_command)
+                                time.sleep(UZURA_CMD_WAIT_SECOND)
 
-    if now == '03:26':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:good:699580636448423936>Thank you! for the MeatCoin🥩29coin<:ty:699857337980026930>Tip! Will eat later.🍖')      
-        
-    if now == '03:27':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain KENJ 50 ActiveUserOnly  ☔<:kenj:700136543003607101>')     
-        
-    if now == '03:28':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://cdn.discordapp.com/attachments/701765831268368474/701767123252543498/iku.png')     
-         
-    if now == '03:29':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@everyone <:hello:699779689127870514> Rain☔ is 1min later.<:good01:699581068285706301>✨')   
-        
-    if now == '03:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 1000 ActiveUserOnly  🌈 <:BGPT02:698471366004965406>') 
-    
-    if now == '03:32':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 777.77 ActiveUserOnly  🌈 <:BENKEICOIN04:698471407650209832> ')  
+            # スロットの出目の応答の場合は何もしない 
+            elif status == 'execute':
+                pass
 
-    if now == '03:34':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 333.3 ActiveUserOnly  🌈 <:JPYNdisco:698471276498649168> ')    
-    
-    if now == '03:36':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain KENJ 1111.11 ActiveUserOnly  ☔<:kenj:700136543003607101>') 
-            
-    if now == '03:38':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw JPYN 400 8 EquallyDistributed  <:JPYNdisco:698471276498649168><:JPYNdisco:698471276498649168><:JPYNdisco:698471276498649168>Pls receive→/catch')
-    
-    if now == '03:40':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw BGPT 1200 8 EquallyDistributed  <:good01:699581068285706301><:BGPT02:698471366004965406><:BGPT02:698471366004965406><:BGPT02:698471366004965406>Pls receive→/catch')
-    
-    if now == '03:42':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw BEN 200 8 AttenuationDistributed  <:BENKEICOIN04:698471407650209832><:benkeicoinsl:698471387064696833>⚾Plz receive→/catch')
-      
-    if now == '03:44':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701767323304067133/hty.png') 
-          
-    if now == '03:45':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:bye:699863270802325604>See you!またね👋')  
-        
-    if now == '04:31':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701775150743289956/migi.png ') 
-        
-    if now == '04:37':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@here 👆/catch<:kaokanga:699072678614663210>? See you later!') 
+    # 「./rush_flg/ユーザー名.csv」が存在する場合のみ「！スタート」でRUSH演出を行う
+    elif message.content == recieve_messages['start_rush']:
+        author = str(message.author).split('#')[0] # そのまま使うとauthorの末尾に「#xxx」が付いてしまうため取り除く
+        RUSH_FLG_PATH = f'{os.getcwd()}/rush_flg/{author}.csv'
+        if os.path.exists(RUSH_FLG_PATH):
+            rush_config = config_dict[RUSH_CONFIG_KEY]
+            random_size_config = rush_config[RANDOM_SIZE_KEY]
+            rush_times = random.randint(random_size_config['from'],random_size_config['to'])
+            rush_tips = rush_config[RUSH_TIP_KEY]
+            rush_picture_rand_size = rush_config[RUSH_PICTURE_RANDOM_KEY]
+            rush_pictures = rush_config[RUSH_PICTURE_KEY]
 
-    if now == '04:40':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 10 ActiveUserOnly  🌈 <:JPYNdisco:698471276498649168> ')   
-        
-    if now == '05:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 20 ActiveUserOnly  <:rain:699585875687899247><:JPYNdisco:698471276498649168><:hello:699779689127870514>')
-    
-    if now == '05:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain kenj 200 ActiveUserOnly  ☔<:kenj:700136543003607101>')
-        
-    if now == '05:31':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://cdn.discordapp.com/attachments/701765831268368474/701767323304067133/hty.png ')    
-        
-    if now == '06:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 30 ActiveUserOnly  <:rain:699585875687899247><:JPYNdisco:698471276498649168><:hello:699779689127870514>')
-    
-    if now == '06:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 77.7 ActiveUserOnly  <:rain:699585875687899247><:BENKEICOIN04:698471407650209832><:benkeicoinsl:698471387064696833>')   
-   
-    if now == '07:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 30 ActiveUserOnly  <:rain:699585875687899247><:JPYNdisco:698471276498649168> ')
-  
-    if now == '07:20':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:cafe:699769671234355230>Good morning 🌎everyone.<:gm:699792760651120671>Have a nice day today! [omikuji] or [fortune] ← for today is fortune🔮Command')
+            summary_count = defaultdict(int)
+            for current_times in range(1, rush_times + 1):
+                tip = None
+                key_probability = random.randint(rush_picture_rand_size['from'], rush_picture_rand_size['to'])
+                for tip_key, from_to in rush_pictures.items():
+                    if from_to['from'] <= key_probability <= from_to['to']:
+                        tip = rush_tips[tip_key]
+                        break
 
-    if now == '07:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 77.7 ActiveUserOnly  <:good01:699581068285706301><:rain:699585875687899247><:BGPT02:698471366004965406> ') 
+                #tip = rush_tips[random.randint(1,len(rush_tips))]
+                coin_name = tip.split('×')[0]
+                odds = tip.split('×')[1]
+                await message.channel.send(f'{coin_name}×{odds}')
+                summary_count[coin_name] += int(odds)
+                time.sleep(1)
 
-    if now == '08:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 35 ActiveUserOnly  <:rain:699585875687899247><:JPYNdisco:698471276498649168><:hello:699779689127870514>')
-     
-    if now == '08:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:suika_paku:699072728153587782> hungry! I want to eat meat again! Meat🥩, meat🍖, meat!🍗肉29coin?!hehe')    
-    
-    if now == '08:31':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw 29coin 146460 5 EquallyDistributed   🍖meat!meat!🍗Plz receive→/catch<:hai_kao:699072592987947117>29meat!肉！🥩')
+            summary_count_str = '終了しました。\n'
+            summary_count_str += f' everyone +{summary_count["everyone"]}, everyloto +{summary_count["everyloto"]}, 456coin +{summary_count["456coin"]}, 29coin +{summary_count["29coin"]} 獲得\n'
+            await message.channel.send(summary_count_str)
+            tip_commands = [
+                f'/tip everyone {summary_count["everyone"]} {message.author.mention}\n',
+                f'/tip everyloto {summary_count["everyloto"]} {message.author.mention}\n',
+                f'/tip 456coin {summary_count["456coin"]} {message.author.mention}\n',
+                f'/tip 29coin {summary_count["29coin"]} {message.author.mention}\n'
 
-    if now == '08:45':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('🥴💦Tummy full. ate too much. The meat is gone!🥩🥩🥩!Sorry..hehe..ww')
-        
-    if now == '08:46':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('Plz.<:kanngaeru:699072662382837881>I am hungry again, so give me 【/tip 29coin *** @🌈Rains☔ 】[meatcoin]Tip🍖')
-    
-    if now == '08:47':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:good01:699581068285706301> ☑🥩29coin tip please. If you tip 29coins of 10000 or 100000, in return, I will tip JPNY COIN for a while!【/tip 29coin <@700176826282147851>】')
-      
-    if now == '09:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701767323304067133/hty.png ')
+            ]
+            for tip_command in tip_commands:    
+                await message.channel.send(tip_command)
+                time.sleep(UZURA_CMD_WAIT_SECOND)
 
-    if now == '09:25':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:good:699580636448423936>Thank you!for the MeatCoin(29coin)Tip! I will eat meat again tomorrow.🍖<:ty:699857337980026930>')
-        
-    if now == '09:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 40 ActiveUserOnly  <:good01:699581068285706301><:rain:699585875687899247><:JPYNdisco:698471276498649168> ')
-   
-    if now == '09:55':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:niko_shita:699072695823892561>Plz.Meat.Meat.beef?pork?chicken?mutton?29Tip🍖')
+            # rush_flgのファイルを消す
+            os.remove(RUSH_FLG_PATH)
+        else:
+            await message.channel.send(send_messages['not_rush_time'])
+            # await client.send_message(message.channel, send_messages['not_rush_time'])
 
-    if now == '09:57':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701767349828714606/hg.png ') 
-        
-    if now == '10:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:aloha:699581550777597992>Hello,how are you❓ ') 
-        
-    if now == '10:29':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@here <:suika_paku:699072728153587782>After 2min, I”ll ☔Rain a little... ') 
-     
-    if now == '10:29':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701767123252543498/iku.png') 
-    
-    if now == '10:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 150 ActiveUserOnly  <:good01:699581068285706301><:rain:699585875687899247><:BGPT02:698471366004965406>') 
-     
-    if now == '10:32':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw BEN 300 6 EquallyDistributed  <:BENKEICOIN04:698471407650209832><:benkeicoinsl:698471387064696833>⚾Plz receive→/catch')
-    
-    if now == '10:33':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw JPYN 120 6 EquallyDistributed  <:good01:699581068285706301><:JPYNdisco:698471276498649168> ⚾Plz receive☞/catch')  
-
-    if now == '10:34':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw BGPT 1200 8 EquallyDistributed  <:good01:699581068285706301><:BGPT02:698471366004965406><:BGPT02:698471366004965406><:BGPT02:698471366004965406>Plz receive→/catch')
-    
-    if now == '10:35':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:cya:699859096794562650>👆/catch') 
-        
-    if now == '10:36':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://cdn.discordapp.com/attachments/701765831268368474/701767323304067133/hty.png ')          
-      
-    if now == '11:24':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('👆/catch? <:heart02:699580174911668225>See you sometimes!<:star1:699582964853375018>')    
-        
-    if now == '11:25':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain kenj 200 ActiveUserOnly  ☔<:kenj:700136543003607101><:sangras01:699579409220370514>')
-        
-    if now == '11:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('How are UZURAS Wallet doing Now～!?　<:uzu2:700858786960900117>...⚡...<:uzu1:700858878879072303>‼Sorry!') 
-    
-    if now == '12:29':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@everyone <:hello:699779689127870514>Rain<:rain:699585875687899247>is 1min later.<:good01:699581068285706301>')  
-
-    if now == '12:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 200 ActiveUserOnly  <:rain:699585875687899247><:JPYNdisco:698471276498649168> ')
-
-    if now == '12:32':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 777.77 ActiveUserOnly  <:rain:699585875687899247><:BGPT02:698471366004965406>')
-
-    if now == '12:34':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 500 ActiveUserOnly  <:rain:699585875687899247><:BENKEICOIN04:698471407650209832><:benkeicoinsl:698471387064696833> ')
-
-    if now == '12:37':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw JPYN 120 4 EquallyDistributed  <:JPYNdisco:698471276498649168> ⚾Plz receive☞/catch') 
-    
-    if now == '12:38':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:good01:699581068285706301><:cya:699859096794562650> ') 
-    
-    if now == '12:39':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:good01:699581068285706301> ☑🥩29coin tip please. If you tip 29coins of 10000 or 100000, in return, I will tip JPNY COIN for a while!【/tip 29coin <@700176826282147851>】I want to eat my meat🍖')
-      
-    if now == '13:14':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701775150743289956/migi.png ')    
-   
-    if now == '13:15':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@everyone 👆/catch ok?<:heart02:699580174911668225>see you!<:star1:699582964853375018>')  
-        
-    if now == '13:16':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701775150743289956/migi.png ')    
-        
-    if now == '13:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@here もうJapanでは深夜就寝前💤?ですよね。todayもあと少しだけRainします。Hello!Rain☔ is 1min later. ')       
-        
-    if now == '13:33':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701767349828714606/hg.png')
-    
-    if now == '13:34':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 300 ActiveUserOnly  <:rain:699585875687899247><:good:699580636448423936> <:BENKEICOIN04:698471407650209832><:benkeicoinsl:698471387064696833> ')
-    
-    if now == '13:37':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 777.77 ActiveUserOnly  <:rain:699585875687899247><:BGPT02:698471366004965406>')
-    
-    if now == '13:40':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@here <:zzz:699581950356226058><:gn:699792795363311676> JapanのEveryoneはそろそろGoodNight！☔is 30min later👋 コロナには気を付けて！<:corona:699588627868418070>Watch out for corona!→ #┃covid-19🦠news ')       
-       
-    if now == '13:41':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://cdn.discordapp.com/attachments/701765831268368474/701767323304067133/hty.png ')    
-
-    if now == '13:57':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:hai_kao:699072592987947117><:hai_kao:699072592987947117><:hai_kao:699072592987947117>   ')      
-        
-    if now == '14:10':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 10 ActiveUserOnly  <:good01:699581068285706301><:rain:699585875687899247><:JPYNdisco:698471276498649168><:gn:699792795363311676> ')  
-
-    if now == '14:13':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw JPYN 80 4 EquallyDistributed  <:JPYNdisco:698471276498649168> ⚾Plz receive→/catch') 
-   
-    if now == '14:15':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw BEN 310.8 4 EquallyDistributed  <:benkeicoinsl:698471387064696833>  ⚾Plz receive→/catch')      
-    
-    if now == '14:17':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/throw KENJ 800 4 EquallyDistributed  <:kenj:700136543003607101> ⚾Plz receive→/catch')
-        
-    if now == '14:19':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('<:bye:699863270802325604>See you! ') 
-        
-    if now == '15:29':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('@here 👆/catch?<:aloha:699581550777597992> ') 
-        
-    if now == '15:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 50 ActiveUserOnly  <:good01:699581068285706301><:BGPT02:698471366004965406> <:rain:699585875687899247><:gn:699792795363311676> ')
-  
-    if now == '15:40':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701775150743289956/migi.png ') 
-
-    if now == '16:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain kenj 50 ActiveUserOnly  ☔<:kenj:700136543003607101> ')
-        
-    if now == '16:55':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 77.7 ActiveUserOnly  <:rain:699585875687899247><:BGPT02:698471366004965406>')   
-        
-    if now == '17:40':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 10 ActiveUserOnly  <:good01:699581068285706301>🌈<:JPYNdisco:698471276498649168><:rain:699585875687899247>')
-    
-    if now == '18:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain kenj 50 ActiveUserOnly  ☔<:kenj:700136543003607101> ')
-        
-    if now == '18:47':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://media.discordapp.net/attachments/701765831268368474/701775150743289956/migi.png ') 
-    
-    if now == '19:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 5 ActiveUserOnly  <:BENKEICOIN04:698471407650209832><:good01:699581068285706301><:rain:699585875687899247> ')  
-
-    if now == '20:40':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 5 ActiveUserOnly  🌈 <:JPYNdisco:698471276498649168> ') 
-          
-    if now == '21:29':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('https://cdn.discordapp.com/attachments/701765831268368474/701767349828714606/hg.png ')
-
-    if now == '21:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BGPT 50 ActiveUserOnly  <:good01:699581068285706301><:BGPT02:698471366004965406> <:rain:699585875687899247>')  
-        
-    if now == '22:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 20 ActiveUserOnly  <:good01:699581068285706301>🌈<:JPYNdisco:698471276498649168>HelloAll⭐')
-   
-    if now == '22:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('Dear japanese<:cafe:699769671234355230>Everyone🌟おはようございます!<:gm:699792760651120671> Have a nice day today！【おみくじ】←で運勢を')
-
-    if now == '23:00':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 20 ActiveUserOnly  <:good01:699581068285706301>🌈<:JPYNdisco:698471276498649168>HelloAll⭐')        
-    
-    if now == '23:30':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain BEN 50 ActiveUserOnly  <:good01:699581068285706301>🌈<:BENKEICOIN04:698471407650209832><:benkeicoinsl:698471387064696833> HelloAll⭐')
-    
-    if now == '23:58':
-        channel = client.get_channel(CHANNEL_ID)
-        await channel.send('/rain JPYN 20 ActiveUserOnly  <:good01:699581068285706301>🌈<:JPYNdisco:698471276498649168>HelloAll⭐')
-  
-
-#ループ処理実行
-loop.start()
-# Botの起動とDiscordサーバーへの接続
 client.run(token)
